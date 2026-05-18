@@ -15,10 +15,11 @@
     <artifactId>iso20022simThrowaway</artifactId>
     <version>1.0-SNAPSHOT</version>
     <name>iso20022simThrowaway</name>
-    <description>ISO 20022 card authorisation simulator</description>
+    <description>ISO 20022 Acquirer Simulator</description>
 
     <properties>
         <java.version>17</java.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
     <dependencies>

@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           targetNamespace="urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15"
+           xmlns="urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15"
+           elementFormDefault="qualified">
+
+    <xs:element name="Document">
+        <xs:complexType>
+            <xs:sequence>
+                <xs:element name="AccptrAuthstnReq" type="AccptrAuthstnReqType"/>
+            </xs:sequence>
+        </xs:complexType>
+    </xs:element>
+
+    <xs:complexType name="AccptrAuthstnReqType">
+        <xs:sequence>
+            <xs:element name="Hdr" type="HdrType"/>
+            <xs:element name="Tx" type="TxType"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="HdrType">
+        <xs:sequence>
+            <xs:element name="MsgFctn" type="xs:string"/>
+            <xs:element name="CreDtTm" type="xs:dateTime"/>
+        </xs:sequence>
+    </xs:complexType>
+
+    <xs:complexType name="TxType">
+        <xs:sequence>
+            <xs:element name="TxId" type="xs:string"/>
+            <xs:element name="TxAmt" type="xs:decimal"/>
+            <xs:element name="CardId" type="xs:string"/>
+            <xs:element name="AcceptorId" type="xs:string"/>
+        </xs:sequence>
+    </xs:complexType>
+</xs:schema>
