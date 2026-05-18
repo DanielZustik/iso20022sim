@@ -3,6 +3,7 @@ package cz.monetplus.iso20022sim.api;
 import cz.monetplus.iso20022sim.validation.MalformedXmlException;
 import cz.monetplus.iso20022sim.validation.SchemaInvalidXmlException;
 import cz.monetplus.iso20022sim.validation.UnsupportedMessageVersionException;
+import cz.monetplus.iso20022sim.error.InvalidAuthorisationRequestException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -32,5 +33,11 @@ public class ApiExceptionHandler {
         return ResponseEntity.status(status)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body);
+    @ExceptionHandler(InvalidAuthorisationRequestException.class)
+    public ResponseEntity<String> handleInvalidAuthorisationRequest(InvalidAuthorisationRequestException exception) {
+        return ResponseEntity
+                .status(HttpStatus.UNPROCESSABLE_ENTITY)
+                .contentType(MediaType.TEXT_PLAIN)
+                .body(exception.getMessage());
     }
 }
