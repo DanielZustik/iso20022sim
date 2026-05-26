@@ -33,6 +33,7 @@ import org.xml.sax.SAXException;
 @AutoConfigureMockMvc
 class AuthorisationApiTest {
 
+    private static final String REQUEST_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15";
     private static final String RESPONSE_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.002.001.15";
 
     @Autowired
@@ -50,8 +51,7 @@ class AuthorisationApiTest {
 
     @Test
     void approvedAuthorisationReturnsSchemaValidResponseWithApprovalCode() throws Exception {
-        String requestXml = new String(new ClassPathResource("samples/approved-authorisation-request.xml")
-                .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        String requestXml = loadApprovedRequestXml();
 
         validateAgainstSchema(requestXml, requestSchema);
 
@@ -75,6 +75,65 @@ class AuthorisationApiTest {
         assertThat(responseCode).isEqualTo("APPR");
         assertThat(approvalCode).isNotBlank();
         assertThat(approvalCode.length()).isLessThanOrEqualTo(8);
+    }
+
+    @Test
+    void malformedXmlReturnsBadRequestWithoutAuthorisationResponse() throws Exception {
+        MvcResult mvcResult = mockMvc.perform(post("/api/authorisations")
+                        .contentType(MediaType.APPLICATION_XML)
+                        .accept(MediaType.ALL)
+                        .content("<Document"))
+                .andExpect(status().isBadRequest())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andReturn();
+        String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(body).contains("not well-formed XML");
+        assertThat(body).doesNotContain(RESPONSE_NS);
+    }
+
+    @Test
+    void schemaInvalidRequestReturnsUnprocessableEntityWithoutAuthorisationResponse() throws Exception {
+        String schemaInvalidXml = """
+                <?xml version="1.0" encoding="UTF-8"?>
+                <Document xmlns="urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15">
+                    <AccptrAuthstnReq/>
+                </Document>
+                """;
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/authorisations")
+                        .contentType(MediaType.APPLICATION_XML)
+                        .accept(MediaType.ALL)
+                        .content(schemaInvalidXml))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andReturn();
+
+        String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(body).contains("not schema-valid caaa.001.001.15 XML");
+        assertThat(body).doesNotContain(RESPONSE_NS);
+    }
+
+    @Test
+    void unsupportedIsoMessageVersionReturnsUnprocessableEntityWithoutAuthorisationResponse() throws Exception {
+        String unsupportedVersionXml = loadApprovedRequestXml()
+                .replace(REQUEST_NS, "urn:iso:std:iso:20022:tech:xsd:caaa.001.001.14");
+
+        MvcResult mvcResult = mockMvc.perform(post("/api/authorisations")
+                        .contentType(MediaType.APPLICATION_XML)
+                        .accept(MediaType.ALL)
+                        .content(unsupportedVersionXml))
+                .andExpect(status().isUnprocessableEntity())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.TEXT_PLAIN))
+                .andReturn();
+
+        String body = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+        assertThat(body).contains("Unsupported ISO 20022 message/version namespace");
+        assertThat(body).doesNotContain(RESPONSE_NS);
+    }
+
+    private static String loadApprovedRequestXml() throws IOException {
+        return new String(new ClassPathResource("samples/approved-authorisation-request.xml")
+                .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private static void validateAgainstSchema(String xml, Schema schema) throws SAXException, IOException {

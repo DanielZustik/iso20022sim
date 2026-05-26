@@ -31,6 +31,7 @@ public class AuthorisationService {
 
     private static final String REQUEST_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15";
     private static final String RESPONSE_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.002.001.15";
+    private static final String ISO_20022_NAMESPACE_PREFIX = "urn:iso:std:iso:20022:tech:xsd:";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Schema requestSchema; // zabundlovane ze spring-web depen.
@@ -43,6 +44,7 @@ public class AuthorisationService {
 
     public String approveAuthorisation(String requestXml) {
         Document requestDocument = parseXml(requestXml); // well formatted xml
+        ensureSupportedRequestNamespace(requestDocument);
         validateXml(requestXml, requestSchema, "Authorisation request is not schema-valid caaa.001.001.15 XML"); // valid xml
 
         RequestProjection requestProjection = RequestProjection.from(requestDocument);
@@ -68,7 +70,7 @@ public class AuthorisationService {
         try {
             schema.newValidator().validate(new StreamSource(new StringReader(xml))); //vytvoreni per run worker ktery nacte schemu a provadi samotny check oproti prijatemu textu
         } catch (SAXException e) {
-            throw new SchemaValidationException(message, e);
+            throw new SchemaValidationException(message + ": " + e.getMessage(), e);
         } catch (IOException e) {
             throw new IllegalStateException("Failed to validate XML", e);
         }
@@ -85,6 +87,20 @@ public class AuthorisationService {
             return documentBuilder.parse(new org.xml.sax.InputSource(new StringReader(xml)));
         } catch (ParserConfigurationException | SAXException | IOException e) { //pr. SAXexcp. chybi closing tag
             throw new MalformedXmlException("Request body is not well-formed XML", e); //konverze do me excp.
+        }
+    }
+
+    private void ensureSupportedRequestNamespace(Document requestDocument) {
+        String namespace = requestDocument.getDocumentElement().getNamespaceURI();
+        if (namespace == null || namespace.isBlank()) {
+            return;
+        }
+        if (!REQUEST_NS.equals(namespace) && namespace.startsWith(ISO_20022_NAMESPACE_PREFIX)) {
+            throw new SchemaValidationException(
+                    "Unsupported ISO 20022 message/version namespace: " + namespace
+                            + ". Supported Authorisation Request namespace is " + REQUEST_NS,
+                    null
+            );
         }
     }
 
