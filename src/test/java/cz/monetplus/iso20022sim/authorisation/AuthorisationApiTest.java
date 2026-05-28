@@ -35,6 +35,9 @@ class AuthorisationApiTest {
 
     private static final String REQUEST_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15";
     private static final String RESPONSE_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.002.001.15";
+    private static final String RULE_AMOUNT_THRESHOLD = "AMOUNT_THRESHOLD";
+    private static final String RULE_DENIED_CARD_IDENTIFIER = "DENIED_CARD_IDENTIFIER";
+    private static final String RULE_DENIED_ACCEPTOR_OR_MERCHANT = "DENIED_ACCEPTOR_OR_MERCHANT_ID";
 
     @Autowired
     private MockMvc mockMvc; //bez toho by se dal controller testovat jen vlasntim serverem nebo ten necontrolovat a omezit se jen na test servisky
@@ -52,7 +55,6 @@ class AuthorisationApiTest {
     @Test
     void approvedAuthorisationReturnsSchemaValidResponseWithApprovalCode() throws Exception {
         String requestXml = loadApprovedRequestXml();
-
         validateAgainstSchema(requestXml, requestSchema);
 
         MvcResult mvcResult = mockMvc.perform(post("/api/authorisations") //fake HTTP POST request to endpoint /api/authorisations
@@ -75,6 +77,64 @@ class AuthorisationApiTest {
         assertThat(responseCode).isEqualTo("APPR");
         assertThat(approvalCode).isNotBlank();
         assertThat(approvalCode.length()).isLessThanOrEqualTo(8);
+    }
+
+    @Test
+    void amountThresholdRuleDeclinesWithSchemaValidResponseAndRuleReason() throws Exception {
+        String requestXml = loadApprovedRequestXml()
+                .replace("<TtlAmt>120.50</TtlAmt>", "<TtlAmt>1500.00</TtlAmt>");
+
+        MvcResult mvcResult = submitAuthorisationExpectingOk(requestXml);
+        String responseXml = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertDeclinedResponse(responseXml, RULE_AMOUNT_THRESHOLD);
+    }
+
+    @Test
+    void deniedCardRuleDeclinesWithSchemaValidResponseAndRuleReason() throws Exception {
+        String requestXml = loadApprovedRequestXml()
+                .replace("4111111111111111", "4000000000000002");
+
+        MvcResult mvcResult = submitAuthorisationExpectingOk(requestXml);
+        String responseXml = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertDeclinedResponse(responseXml, RULE_DENIED_CARD_IDENTIFIER);
+    }
+
+    @Test
+    void deniedMerchantRuleDeclinesWithSchemaValidResponseAndRuleReason() throws Exception {
+        String requestXml = loadApprovedRequestXml()
+                .replace("MERCHANT-001", "MERCHANT-BLOCKED");
+
+        MvcResult mvcResult = submitAuthorisationExpectingOk(requestXml);
+        String responseXml = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertDeclinedResponse(responseXml, RULE_DENIED_ACCEPTOR_OR_MERCHANT);
+    }
+
+    @Test
+    void deniedAcceptorRuleDeclinesWithSchemaValidResponseAndRuleReason() throws Exception {
+        String requestXml = loadApprovedRequestXml()
+                .replace("POI-001", "POI-BLOCKED");
+
+        MvcResult mvcResult = submitAuthorisationExpectingOk(requestXml);
+        String responseXml = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertDeclinedResponse(responseXml, RULE_DENIED_ACCEPTOR_OR_MERCHANT);
+    }
+
+    @Test
+    void ruleOrderingPrefersAmountThresholdOverOtherMatchingRules() throws Exception {
+        String requestXml = loadApprovedRequestXml()
+                .replace("<TtlAmt>120.50</TtlAmt>", "<TtlAmt>1500.00</TtlAmt>")
+                .replace("4111111111111111", "4000000000000002")
+                .replace("MERCHANT-001", "MERCHANT-BLOCKED")
+                .replace("POI-001", "POI-BLOCKED");
+
+        MvcResult mvcResult = submitAuthorisationExpectingOk(requestXml);
+        String responseXml = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+
+        assertDeclinedResponse(responseXml, RULE_AMOUNT_THRESHOLD);
     }
 
     @Test
@@ -131,6 +191,31 @@ class AuthorisationApiTest {
         assertThat(body).doesNotContain(RESPONSE_NS);
     }
 
+    private MvcResult submitAuthorisationExpectingOk(String requestXml) throws Exception {
+        return mockMvc.perform(post("/api/authorisations")
+                        .contentType(MediaType.APPLICATION_XML)
+                        .accept(MediaType.APPLICATION_XML)
+                        .content(requestXml))
+                .andExpect(status().isOk())
+                .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_XML))
+                .andReturn();
+    }
+
+    private void assertDeclinedResponse(String responseXml, String expectedRuleReason) throws Exception {
+        validateAgainstSchema(responseXml, responseSchema);
+
+        Document responseDocument = parseXml(responseXml);
+        String responseCode = firstElementText(responseDocument, RESPONSE_NS, "Rspn");
+        String ruleReason = firstElementText(responseDocument, RESPONSE_NS, "RspnRsn");
+        String addtlResponseInfo = firstElementText(responseDocument, RESPONSE_NS, "AddtlRspnInf");
+        String approvalCode = optionalElementText(responseDocument, RESPONSE_NS, "AuthstnCd");
+
+        assertThat(responseCode).isEqualTo("DECL");
+        assertThat(ruleReason).isEqualTo(expectedRuleReason);
+        assertThat(addtlResponseInfo).isNotBlank();
+        assertThat(approvalCode).isNull();
+    }
+
     private static String loadApprovedRequestXml() throws IOException {
         return new String(new ClassPathResource("samples/approved-authorisation-request.xml")
                 .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -153,6 +238,20 @@ class AuthorisationApiTest {
     private static String firstElementText(Document document, String namespace, String localName) {
         NodeList nodeList = document.getElementsByTagNameNS(namespace, localName);
         assertThat(nodeList.getLength()).isGreaterThan(0);
-        return nodeList.item(0).getTextContent();
+        String value = nodeList.item(0).getTextContent();
+        return value == null ? "" : value.trim();
+    }
+
+    private static String optionalElementText(Document document, String namespace, String localName) {
+        NodeList nodeList = document.getElementsByTagNameNS(namespace, localName);
+        if (nodeList.getLength() == 0) {
+            return null;
+        }
+        String value = nodeList.item(0).getTextContent();
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
     }
 }

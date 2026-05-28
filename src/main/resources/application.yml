@@ -1,0 +1,10 @@
+simulator:
+  default-decision: APPROVE
+  rules:
+    amount-threshold: 1000.00
+    denied-card-identifiers:
+      - 4000000000000002
+    denied-merchant-identifiers:
+      - MERCHANT-BLOCKED
+    denied-acceptor-identifiers:
+      - POI-BLOCKED

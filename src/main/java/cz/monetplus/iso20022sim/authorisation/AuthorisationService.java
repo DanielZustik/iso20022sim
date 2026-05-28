@@ -4,9 +4,14 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
 import java.io.StringWriter;
+import java.math.BigDecimal;
 import java.security.SecureRandom;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -23,7 +28,7 @@ import javax.xml.validation.SchemaFactory;
 import org.springframework.stereotype.Service;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
+import org.w3c.dom.Node;
 import org.xml.sax.SAXException;
 
 @Service
@@ -32,14 +37,26 @@ public class AuthorisationService {
     private static final String REQUEST_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.001.001.15";
     private static final String RESPONSE_NS = "urn:iso:std:iso:20022:tech:xsd:caaa.002.001.15";
     private static final String ISO_20022_NAMESPACE_PREFIX = "urn:iso:std:iso:20022:tech:xsd:";
+    private static final String RULE_AMOUNT_THRESHOLD = "AMOUNT_THRESHOLD";
+    private static final String RULE_DENIED_CARD_IDENTIFIER = "DENIED_CARD_IDENTIFIER";
+    private static final String RULE_DENIED_ACCEPTOR_OR_MERCHANT = "DENIED_ACCEPTOR_OR_MERCHANT_ID";
+    private static final String RULE_DEFAULT_DECLINE = "DEFAULT_DECISION_DECLINE";
     private static final SecureRandom RANDOM = new SecureRandom();
 
     private final Schema requestSchema; // zabundlovane ze spring-web depen.
     private final Schema responseSchema;
+    private final SimulatorConfigurationProperties config;
+    private final Set<String> deniedCardIdentifiers;
+    private final Set<String> deniedMerchantIdentifiers;
+    private final Set<String> deniedAcceptorIdentifiers;
 
-    public AuthorisationService() {
+    public AuthorisationService(SimulatorConfigurationProperties config) {
+        this.config = config;
         this.requestSchema = loadSchema("xsd/caaa.001.001.15.xsd");
         this.responseSchema = loadSchema("xsd/caaa.002.001.15.xsd");
+        this.deniedCardIdentifiers = normaliseIdentifiers(config.getRules().getDeniedCardIdentifiers()); //z configu muze prijit ledasco
+        this.deniedMerchantIdentifiers = normaliseIdentifiers(config.getRules().getDeniedMerchantIdentifiers());
+        this.deniedAcceptorIdentifiers = normaliseIdentifiers(config.getRules().getDeniedAcceptorIdentifiers());
     }
 
     public String approveAuthorisation(String requestXml) {
@@ -48,10 +65,59 @@ public class AuthorisationService {
         validateXml(requestXml, requestSchema, "Authorisation request is not schema-valid caaa.001.001.15 XML"); // valid xml
 
         RequestProjection requestProjection = RequestProjection.from(requestDocument);
-        String responseXml = buildApprovedResponse(requestProjection);
+        AuthorisationDecision decision = evaluateDecision(requestProjection);
+        String responseXml = buildResponse(requestProjection, decision);
 
         validateXml(responseXml, responseSchema, "Generated authorisation response is not schema-valid caaa.002.001.15 XML");
         return responseXml;
+    }
+
+    private AuthorisationDecision evaluateDecision(RequestProjection requestProjection) {
+        BigDecimal amountThreshold = config.getRules().getAmountThreshold();
+        if (amountThreshold != null) {
+            BigDecimal totalAmount = parseAmount(requestProjection.totalAmount());
+            if (totalAmount.compareTo(amountThreshold) > 0) {
+                return AuthorisationDecision.decline(
+                        RULE_AMOUNT_THRESHOLD,
+                        "Declined by amount threshold rule"
+                );
+            }
+        }
+
+        if (requestProjection.cardIdentifier() != null
+                && deniedCardIdentifiers.contains(requestProjection.cardIdentifier())) {
+            return AuthorisationDecision.decline(
+                    RULE_DENIED_CARD_IDENTIFIER,
+                    "Declined by denied card identifier rule"
+            );
+        }
+
+        if ((requestProjection.merchantIdentifier() != null
+                && deniedMerchantIdentifiers.contains(requestProjection.merchantIdentifier()))
+                || (requestProjection.acceptorIdentifier() != null
+                && deniedAcceptorIdentifiers.contains(requestProjection.acceptorIdentifier()))) {
+            return AuthorisationDecision.decline(
+                    RULE_DENIED_ACCEPTOR_OR_MERCHANT,
+                    "Declined by denied acceptor or merchant identifier rule"
+            );
+        }
+
+        if (config.getDefaultDecision() == SimulatorConfigurationProperties.DefaultDecision.DECLINE) {
+            return AuthorisationDecision.decline(
+                    RULE_DEFAULT_DECLINE,
+                    "Declined by configured default decision"
+            );
+        }
+
+        return AuthorisationDecision.approve(generateApprovalCode());
+    }
+
+    private BigDecimal parseAmount(String amountText) {
+        try {
+            return new BigDecimal(amountText);
+        } catch (NumberFormatException e) {
+            throw new SchemaValidationException("Invalid amount value in request: Tx/TxDtls/TtlAmt", e);
+        }
     }
 
     private Schema loadSchema(String resourcePath) {
@@ -104,7 +170,7 @@ public class AuthorisationService {
         }
     }
 
-    private String buildApprovedResponse(RequestProjection requestProjection) {
+    private String buildResponse(RequestProjection requestProjection, AuthorisationDecision decision) {
         DocumentBuilderFactory documentBuilderFactory = DocumentBuilderFactory.newInstance();
         documentBuilderFactory.setNamespaceAware(true);
 
@@ -139,8 +205,17 @@ public class AuthorisationService {
             Element txResponseElement = appendElement(responseDocument, authorisationResponseElement, "TxRspn");
             Element authorisationResultElement = appendElement(responseDocument, txResponseElement, "AuthstnRslt");
             Element responseToAuthorisationElement = appendElement(responseDocument, authorisationResultElement, "RspnToAuthstn");
-            appendTextElement(responseDocument, responseToAuthorisationElement, "Rspn", "APPR");
-            appendTextElement(responseDocument, authorisationResultElement, "AuthstnCd", generateApprovalCode());
+            appendTextElement(responseDocument, responseToAuthorisationElement, "Rspn", decision.responseCode());
+
+            if (decision.responseReason() != null) {
+                appendTextElement(responseDocument, responseToAuthorisationElement, "RspnRsn", decision.responseReason());
+            }
+            if (decision.additionalResponseInfo() != null) {
+                appendTextElement(responseDocument, responseToAuthorisationElement, "AddtlRspnInf", decision.additionalResponseInfo());
+            }
+            if (decision.approvalCode() != null) {
+                appendTextElement(responseDocument, authorisationResultElement, "AuthstnCd", decision.approvalCode());
+            }
 
             return toXml(responseDocument);
         } catch (ParserConfigurationException e) {
@@ -177,29 +252,110 @@ public class AuthorisationService {
         return String.valueOf(value);
     }
 
-    private static String firstElementText(Document document, String namespace, String localName, String fieldLabel) {
-        NodeList nodeList = document.getElementsByTagNameNS(namespace, localName);
-        if (nodeList.getLength() == 0) {
-            throw new SchemaValidationException("Missing required field in request: " + fieldLabel, null);
+    private static Set<String> normaliseIdentifiers(List<String> identifiers) {
+        if (identifiers == null) { //Default hodnota je nonNull, ale config muze null nastavit
+            return Set.of();
         }
-        String value = nodeList.item(0).getTextContent();
-        if (value == null || value.isBlank()) {
-            throw new SchemaValidationException("Field in request is blank: " + fieldLabel, null);
-        }
-        return value.trim();
+        return identifiers.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .collect(Collectors.toUnmodifiableSet()); //good practice aby se runtime nahodou neprepsal resp. startUp config zustal as is forever
     }
 
-    private record RequestProjection(String protocolVersion, String exchangeId, String transactionDateTime,
-                                     String transactionReference, String totalAmount) {
+    private static String requiredPathText(Document document, String fieldLabel, String... path) {
+        String value = optionalPathText(document, path);
+        if (value == null) {
+            throw new SchemaValidationException("Missing required field in request: " + fieldLabel, null);
+        }
+        return value;
+    }
+
+    private static String optionalPathText(Document document, String... path) {
+        Element element = findPathElement(document, path);
+        if (element == null) {
+            return null;
+        }
+        String value = element.getTextContent();
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private static Element findPathElement(Document document, String... path) {
+        Element current = document.getDocumentElement();
+        if (current == null || !"Document".equals(current.getLocalName())) {
+            return null;
+        }
+
+        for (String localName : path) {
+            current = firstDirectChild(current, REQUEST_NS, localName);
+            if (current == null) {
+                return null;
+            }
+        }
+        return current;
+    }
+
+    private static Element firstDirectChild(Element parent, String namespace, String localName) {
+        Node child = parent.getFirstChild();
+        while (child != null) {
+            if (child.getNodeType() == Node.ELEMENT_NODE) {
+                Element element = (Element) child;
+                if (namespace.equals(element.getNamespaceURI()) && localName.equals(element.getLocalName())) {
+                    return element;
+                }
+            }
+            child = child.getNextSibling();
+        }
+        return null;
+    }
+
+    private record RequestProjection(
+            String protocolVersion,
+            String exchangeId,
+            String transactionDateTime,
+            String transactionReference,
+            String totalAmount,
+            String cardIdentifier,
+            String merchantIdentifier,
+            String acceptorIdentifier) {
 
         private static RequestProjection from(Document requestDocument) {
             return new RequestProjection(
-                    firstElementText(requestDocument, REQUEST_NS, "PrtcolVrsn", "Hdr/PrtcolVrsn"),
-                    firstElementText(requestDocument, REQUEST_NS, "XchgId", "Hdr/XchgId"),
-                    firstElementText(requestDocument, REQUEST_NS, "TxDtTm", "Tx/TxId/TxDtTm"),
-                    firstElementText(requestDocument, REQUEST_NS, "TxRef", "Tx/TxId/TxRef"),
-                    firstElementText(requestDocument, REQUEST_NS, "TtlAmt", "Tx/TxDtls/TtlAmt")
+                    requiredPathText(requestDocument, "Hdr/PrtcolVrsn", "AccptrAuthstnReq", "Hdr", "PrtcolVrsn"),
+                    requiredPathText(requestDocument, "Hdr/XchgId", "AccptrAuthstnReq", "Hdr", "XchgId"),
+                    requiredPathText(requestDocument, "Tx/TxId/TxDtTm", "AccptrAuthstnReq", "AuthstnReq", "Tx", "TxId", "TxDtTm"),
+                    requiredPathText(requestDocument, "Tx/TxId/TxRef", "AccptrAuthstnReq", "AuthstnReq", "Tx", "TxId", "TxRef"),
+                    requiredPathText(requestDocument, "Tx/TxDtls/TtlAmt", "AccptrAuthstnReq", "AuthstnReq", "Tx", "TxDtls", "TtlAmt"),
+                    firstNonNull(
+                            optionalPathText(requestDocument, "AccptrAuthstnReq", "AuthstnReq", "Envt", "Card", "PlainCardData", "PAN"),
+                            optionalPathText(requestDocument, "AccptrAuthstnReq", "AuthstnReq", "Envt", "Card", "MskdPAN")
+                    ),
+                    optionalPathText(requestDocument, "AccptrAuthstnReq", "AuthstnReq", "Envt", "Mrchnt", "Id", "Id"),
+                    optionalPathText(requestDocument, "AccptrAuthstnReq", "AuthstnReq", "Envt", "POI", "Id", "Id")
             );
         }
+    }
+
+    private record AuthorisationDecision(
+            String responseCode,
+            String approvalCode,
+            String responseReason,
+            String additionalResponseInfo) {
+
+        private static AuthorisationDecision approve(String approvalCode) {
+            return new AuthorisationDecision("APPR", approvalCode, null, null);
+        }
+
+        private static AuthorisationDecision decline(String responseReason, String additionalResponseInfo) {
+            return new AuthorisationDecision("DECL", null, responseReason, additionalResponseInfo);
+        }
+    }
+
+    private static String firstNonNull(String firstValue, String secondValue) {
+        return firstValue != null ? firstValue : secondValue;
     }
 }
