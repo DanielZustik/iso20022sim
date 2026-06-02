@@ -9,7 +9,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-@RestController
+@RestController // handles web requests, and method return values are written directly into the HTTP response body.
 @RequestMapping(path = "/api/authorisations")
 public class AuthorisationController {
 
