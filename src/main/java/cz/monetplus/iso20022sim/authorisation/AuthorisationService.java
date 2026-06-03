@@ -1,5 +1,6 @@
 package cz.monetplus.iso20022sim.authorisation;
 
+import cz.monetplus.iso20022sim.requestlog.RequestLog;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.StringReader;
@@ -46,12 +47,14 @@ public class AuthorisationService {
     private final Schema requestSchema; // zabundlovane ze spring-web depen.
     private final Schema responseSchema;
     private final SimulatorConfigurationProperties config;
+    private final RequestLog requestLog;
     private final Set<String> deniedCardIdentifiers;
     private final Set<String> deniedMerchantIdentifiers;
     private final Set<String> deniedAcceptorIdentifiers;
 
-    public AuthorisationService(SimulatorConfigurationProperties config) {
+    public AuthorisationService(SimulatorConfigurationProperties config, RequestLog requestLog) {
         this.config = config;
+        this.requestLog = requestLog;
         this.requestSchema = loadSchema("xsd/caaa.001.001.15.xsd");
         this.responseSchema = loadSchema("xsd/caaa.002.001.15.xsd");
         this.deniedCardIdentifiers = normaliseIdentifiers(config.getRules().getDeniedCardIdentifiers()); //z configu muze prijit ledasco
@@ -59,17 +62,40 @@ public class AuthorisationService {
         this.deniedAcceptorIdentifiers = normaliseIdentifiers(config.getRules().getDeniedAcceptorIdentifiers());
     }
 
-    public String approveAuthorisation(String requestXml) {
-        Document requestDocument = parseXml(requestXml); // well formatted xml
-        ensureSupportedRequestNamespace(requestDocument);
-        validateXml(requestXml, requestSchema, "Authorisation request is not schema-valid caaa.001.001.15 XML"); // valid xml
+    public String approveAuthorisation(String requestXml) { //neni treba sycnho, because most variables are local to the method and threads have separate method call stack
+        try {
+            Document requestDocument = parseXml(requestXml); // well formatted xml
+            ensureSupportedRequestNamespace(requestDocument);
+            validateXml(requestXml, requestSchema, "Authorisation request is not schema-valid caaa.001.001.15 XML"); // valid xml
 
-        RequestProjection requestProjection = RequestProjection.from(requestDocument);
-        AuthorisationDecision decision = evaluateDecision(requestProjection);
-        String responseXml = buildResponse(requestProjection, decision);
+            RequestProjection requestProjection = RequestProjection.from(requestDocument);
+            AuthorisationDecision decision = evaluateDecision(requestProjection);
+            String responseXml = buildResponse(requestProjection, decision);
 
-        validateXml(responseXml, responseSchema, "Generated authorisation response is not schema-valid caaa.002.001.15 XML");
-        return responseXml;
+            validateXml(responseXml, responseSchema, "Generated authorisation response is not schema-valid caaa.002.001.15 XML");
+            requestLog.recordAuthorisation(
+                    requestProjection.transactionReference(),
+                    requestProjection.exchangeId(),
+                    requestProjection.totalAmount(),
+                    requestProjection.cardIdentifier(),
+                    requestProjection.merchantIdentifier(),
+                    requestProjection.acceptorIdentifier(),
+                    decision.responseCode(),
+                    decision.responseReason(),
+                    responseSummary(decision)
+            );
+            return responseXml;
+        } catch (MalformedXmlException | SchemaValidationException exception) {
+            requestLog.recordInvalidRequest("Rejected: " + exception.getMessage());
+            throw exception;
+        }
+    }
+
+    private String responseSummary(AuthorisationDecision decision) {
+        if (decision.approvalCode() != null) {
+            return decision.responseCode() + " approvalCode=" + decision.approvalCode();
+        }
+        return decision.responseCode() + " matchedRule=" + decision.responseReason();
     }
 
     private AuthorisationDecision evaluateDecision(RequestProjection requestProjection) {

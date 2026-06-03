@@ -20,7 +20,7 @@ public class AuthorisationController {
     }
 
     @PostMapping(consumes = MediaType.APPLICATION_XML_VALUE, produces = MediaType.APPLICATION_XML_VALUE) //pouze scheckuje ze header v dosle http ma tez xml.application
-    public ResponseEntity<String> authorise(@RequestBody String requestXml) {
+    public ResponseEntity<String> authorise(@RequestBody String requestXml) { // thread pool
         return ResponseEntity.ok(authorisationService.approveAuthorisation(requestXml));
     }
 

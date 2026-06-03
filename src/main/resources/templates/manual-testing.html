@@ -87,6 +87,32 @@
             white-space: pre-wrap;
             word-break: break-word;
         }
+
+        .table-wrap {
+            overflow-x: auto;
+        }
+
+        table {
+            width: 100%;
+            min-width: 1100px;
+            border-collapse: collapse;
+            font-size: 0.88rem;
+        }
+
+        th, td {
+            padding: 0.55rem;
+            border-bottom: 1px solid #d7dde3;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        th {
+            background: #eef2f6;
+        }
+
+        .muted {
+            color: #52616f;
+        }
     </style>
 </head>
 <body>
@@ -122,6 +148,50 @@
         <div class="status" id="responseStatus">Not submitted</div>
         <pre id="responseBody"></pre>
     </section>
+
+    <section class="card">
+        <div class="row">
+            <h2 style="margin: 0;">Recent Request Log</h2>
+            <button id="refreshRequestLogButton" type="button">Refresh Log</button>
+            <span class="muted" id="requestLogStatus"></span>
+        </div>
+        <p class="muted">Debugging information is kept in memory only and resets when the application restarts.</p>
+        <div class="table-wrap">
+            <table>
+                <thead>
+                <tr>
+                    <th>Timestamp</th>
+                    <th>Request identifier</th>
+                    <th>Exchange ID</th>
+                    <th>Amount</th>
+                    <th>Card identifier</th>
+                    <th>Merchant</th>
+                    <th>Acceptor</th>
+                    <th>Decision</th>
+                    <th>Matched rule</th>
+                    <th>Response summary</th>
+                </tr>
+                </thead>
+                <tbody id="requestLogBody">
+                <tr th:if="${#lists.isEmpty(requestLogEntries)}">
+                    <td colspan="10">No submissions recorded.</td>
+                </tr>
+                <tr th:each="entry : ${requestLogEntries}">
+                    <td th:text="${entry.timestamp()}">Timestamp</td>
+                    <td th:text="${entry.requestIdentifier() ?: '-'}">Request identifier</td>
+                    <td th:text="${entry.exchangeId() ?: '-'}">Exchange ID</td>
+                    <td th:text="${entry.totalAmount() ?: '-'}">Amount</td>
+                    <td th:text="${entry.cardIdentifier() ?: '-'}">Card identifier</td>
+                    <td th:text="${entry.merchantIdentifier() ?: '-'}">Merchant</td>
+                    <td th:text="${entry.acceptorIdentifier() ?: '-'}">Acceptor</td>
+                    <td th:text="${entry.authorisationDecision()}">Decision</td>
+                    <td th:text="${entry.matchedRule() ?: '-'}">Matched rule</td>
+                    <td th:text="${entry.responseSummary()}">Response summary</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
 </main>
 
 <script th:inline="javascript">
@@ -134,6 +204,9 @@
     const submitForm = document.getElementById("submitForm");
     const responseStatus = document.getElementById("responseStatus");
     const responseBody = document.getElementById("responseBody");
+    const refreshRequestLogButton = document.getElementById("refreshRequestLogButton");
+    const requestLogStatus = document.getElementById("requestLogStatus");
+    const requestLogBody = document.getElementById("requestLogBody");
 
     async function loadSample(sampleId) {
         responseStatus.textContent = "Loading sample...";
@@ -157,6 +230,59 @@
         await loadSample(sampleSelect.value);
     });
 
+    function appendCell(row, value) {
+        const cell = document.createElement("td");
+        cell.textContent = value ?? "-";
+        row.appendChild(cell);
+    }
+
+    function renderRequestLog(entries) {
+        requestLogBody.replaceChildren();
+        if (entries.length === 0) {
+            const row = document.createElement("tr");
+            const cell = document.createElement("td");
+            cell.colSpan = 10;
+            cell.textContent = "No submissions recorded.";
+            row.appendChild(cell);
+            requestLogBody.appendChild(row);
+            return;
+        }
+
+        for (const entry of entries) {
+            const row = document.createElement("tr");
+            appendCell(row, entry.timestamp);
+            appendCell(row, entry.requestIdentifier);
+            appendCell(row, entry.exchangeId);
+            appendCell(row, entry.totalAmount);
+            appendCell(row, entry.cardIdentifier);
+            appendCell(row, entry.merchantIdentifier);
+            appendCell(row, entry.acceptorIdentifier);
+            appendCell(row, entry.authorisationDecision);
+            appendCell(row, entry.matchedRule);
+            appendCell(row, entry.responseSummary);
+            requestLogBody.appendChild(row);
+        }
+    }
+
+    async function refreshRequestLog() {
+        requestLogStatus.textContent = "Refreshing...";
+        const response = await fetch("/manual-testing/request-log", {
+            headers: {
+                "Accept": "application/json"
+            }
+        });
+        if (!response.ok) {
+            requestLogStatus.textContent = `Refresh failed (${response.status})`;
+            return;
+        }
+        renderRequestLog(await response.json());
+        requestLogStatus.textContent = "Log refreshed";
+    }
+
+    refreshRequestLogButton.addEventListener("click", async () => {
+        await refreshRequestLog();
+    });
+
     submitForm.addEventListener("submit", async (event) => {
         event.preventDefault();
         responseStatus.textContent = "Submitting...";
@@ -174,6 +300,7 @@
         const body = await response.text();
         responseStatus.textContent = `${response.status} ${response.statusText}`;
         responseBody.textContent = body;
+        await refreshRequestLog();
     });
 
     loadSample(defaultSampleId).catch((error) => {
@@ -183,4 +310,3 @@
 </script>
 </body>
 </html>
-
