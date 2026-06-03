@@ -8,6 +8,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import java.io.IOException;
 import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
@@ -138,6 +141,78 @@ class AuthorisationApiTest {
     }
 
     @Test
+    void curatedSamplesExerciseExpectedOutcomesWithSchemaValidResponses() throws Exception {
+        Map<String, ExpectedSampleOutcome> expectedOutcomesByResource = new LinkedHashMap<>();
+        expectedOutcomesByResource.put("manual-testing-samples/approved-authorisation-request.xml",
+                new ExpectedSampleOutcome(200, "APPR", null));
+        expectedOutcomesByResource.put("manual-testing-samples/amount-decline-authorisation-request.xml",
+                new ExpectedSampleOutcome(200, "DECL", RULE_AMOUNT_THRESHOLD));
+        expectedOutcomesByResource.put("manual-testing-samples/denied-card-authorisation-request.xml",
+                new ExpectedSampleOutcome(200, "DECL", RULE_DENIED_CARD_IDENTIFIER));
+        expectedOutcomesByResource.put("manual-testing-samples/denied-acceptor-authorisation-request.xml",
+                new ExpectedSampleOutcome(200, "DECL", RULE_DENIED_ACCEPTOR_OR_MERCHANT));
+        expectedOutcomesByResource.put("manual-testing-samples/invalid-authorisation-request.xml",
+                new ExpectedSampleOutcome(422, null, null));
+
+        for (Map.Entry<String, ExpectedSampleOutcome> expected : expectedOutcomesByResource.entrySet()) {
+            MvcResult mvcResult = mockMvc.perform(post("/api/authorisations")
+                            .contentType(MediaType.APPLICATION_XML)
+                            .accept(MediaType.ALL)
+                            .content(loadClasspathResource(expected.getKey())))
+                    .andExpect(status().is(expected.getValue().httpStatus()))
+                    .andReturn();
+
+            String responseBody = mvcResult.getResponse().getContentAsString(StandardCharsets.UTF_8);
+            if (expected.getValue().httpStatus() == 200) {
+                assertThat(mvcResult.getResponse().getContentType()).contains(MediaType.APPLICATION_XML_VALUE);
+                validateAgainstSchema(responseBody, responseSchema);
+
+                Document responseDocument = parseXml(responseBody);
+                String responseCode = firstElementText(responseDocument, RESPONSE_NS, "Rspn");
+                String approvalCode = optionalElementText(responseDocument, RESPONSE_NS, "AuthstnCd");
+                String ruleReason = optionalElementText(responseDocument, RESPONSE_NS, "RspnRsn");
+
+                assertThat(responseCode).isEqualTo(expected.getValue().responseCode());
+                assertThat(ruleReason).isEqualTo(expected.getValue().ruleReason());
+                if ("APPR".equals(expected.getValue().responseCode())) {
+                    assertThat(approvalCode).isNotBlank();
+                } else {
+                    assertThat(approvalCode).isNull();
+                }
+            } else {
+                assertThat(mvcResult.getResponse().getContentType()).contains(MediaType.TEXT_PLAIN_VALUE);
+                assertThat(responseBody).doesNotContain(RESPONSE_NS);
+            }
+        }
+    }
+
+    @Test
+    void outOfScopeSimulatorSurfacesRemainUnavailable() throws Exception {
+        String requestXml = loadApprovedRequestXml();
+        List<String> outOfScopePaths = List.of(
+                "/api/completions",
+                "/api/captures",
+                "/api/cancellations",
+                "/api/reversals",
+                "/api/reconciliations",
+                "/api/settlements",
+                "/api/clearing",
+                "/api/account-postings",
+                "/api/authorisations/rules",
+                "/soap",
+                "/api/soap"
+        );
+
+        for (String path : outOfScopePaths) {
+            mockMvc.perform(post(path)
+                            .contentType(MediaType.APPLICATION_XML)
+                            .accept(MediaType.ALL)
+                            .content(requestXml))
+                    .andExpect(status().isNotFound());
+        }
+    }
+
+    @Test
     void malformedXmlReturnsBadRequestWithoutAuthorisationResponse() throws Exception {
         MvcResult mvcResult = mockMvc.perform(post("/api/authorisations")
                         .contentType(MediaType.APPLICATION_XML)
@@ -217,8 +292,11 @@ class AuthorisationApiTest {
     }
 
     private static String loadApprovedRequestXml() throws IOException {
-        return new String(new ClassPathResource("samples/approved-authorisation-request.xml")
-                .getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        return loadClasspathResource("samples/approved-authorisation-request.xml");
+    }
+
+    private static String loadClasspathResource(String resourcePath) throws IOException {
+        return new String(new ClassPathResource(resourcePath).getInputStream().readAllBytes(), StandardCharsets.UTF_8);
     }
 
     private static void validateAgainstSchema(String xml, Schema schema) throws SAXException, IOException {
@@ -253,5 +331,8 @@ class AuthorisationApiTest {
         }
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private record ExpectedSampleOutcome(int httpStatus, String responseCode, String ruleReason) {
     }
 }

@@ -20,12 +20,12 @@ import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
 
-@SpringBootTest
+@SpringBootTest //Scans project for config and start Spring app. No browser, no TCP socket, no Tomcat listening on a port
 @AutoConfigureMockMvc
 class ManualTestingUiTest {
 
     @Autowired
-    private MockMvc mockMvc;
+    private MockMvc mockMvc; //web layer using fake HTTP via MockMvc
 
     @Autowired
     private RequestLog requestLog;
